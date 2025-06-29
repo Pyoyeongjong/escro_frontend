@@ -4,7 +4,6 @@ import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { Router } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 export default function NewProductPage() {
@@ -29,7 +28,8 @@ export default function NewProductPage() {
         formData.append("cost", cost);
         console.log(cost);
         formData.append("description", description);
-        images.forEach((img, idx) => {
+        images.forEach((img, _idx) => {
+            console.log(_idx);
             formData.append("image", img); // 서버에서 multiple 처리
         });
 

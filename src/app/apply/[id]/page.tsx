@@ -4,7 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 
 // 예시 상품 데이터 (추후 fetch로 대체 가능)
 const productData = Array.from({ length: 10 }).map((_, i) => ({

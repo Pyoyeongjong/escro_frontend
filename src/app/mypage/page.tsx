@@ -5,10 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { useRouter } from "next/navigation";
-import { Rss } from "lucide-react";
-import { ethers, parseUnits } from "ethers";
+import { ethers } from "ethers";
 import { Contract } from "ethers";
-import { assert } from "console";
 import { ProductStatus } from "../../../types/product-status";
 import { TradeOfferStatus } from "../../../types/trade-offer-status";
 
@@ -20,7 +18,7 @@ interface UserInfo {
 
 interface TradeRequest {
     id: number;
-    product: { id: number; title: string, status: string }
+    product: { id: number; title: string, status: string, cost: number }
     cost: number;
     accepted: TradeOfferStatus;
 }
@@ -49,6 +47,38 @@ export default function MyPage() {
         "function create_new_product(string memory _name, uint _cost) public payable returns (uint)",
         "function get_manner(address _addr) public view returns (uint)"
     ]
+    // 10^-9 ether
+    const gwei = 0.001 * 0.001 * 0.001;
+
+    // useEffect 안에서는 await를 직접 쓸 수 없음.
+    useEffect(() => {
+        // 여기에 API 요청해서 유저 정보 및 거래내역 받아오는 코드 작성하면 됨
+
+        const fetchUser = async () => {
+            const token = localStorage.getItem("accessToken");
+
+            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/user/getUser`, {
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                },
+            });
+
+            const userdata = await res.json();
+            console.log(userdata);
+
+            setUser({
+                name: userdata.name,
+                walletAddress: userdata.wallet,
+                shippingAddress: userdata.location
+            });
+
+            setMyTrades(userdata.trade_offers);
+
+            setMyProducts(userdata.products);
+        };
+        fetchUser();
+    }, [updated]);
 
     async function updateLocation() {
         const accessToken = localStorage.getItem("accessToken");
@@ -71,16 +101,16 @@ export default function MyPage() {
         }
     }
 
+    function get_fee(manner: number, cost: number) {
+        return (200 + 10 - manner) * cost * 0.01;
+    }
+
     async function createTransaction(product: ProductPost) {
 
         // assert 대용
         if (product.status !== "matched") {
             alert("Invalid product state");
             return;
-        }
-
-        function get_fee(manner: number, cost: number) {
-            return (200 + 10 - manner) * cost * 0.001 * 0.001 * 0.001 * 0.01;
         }
 
         if (!window.ethereum) {
@@ -94,36 +124,23 @@ export default function MyPage() {
         const signer = await provider.getSigner();
 
         const contract = new Contract(contractAddress, abi, signer);
-        let manner = null;
         try {
-            manner = await contract.get_manner(address);
-        } catch (err) {
-            alert("Can't get manner");
-            return;
-        }
+            const manner = await contract.get_manner(address);
 
-        const fee = get_fee(manner, product.cost);
-
-        try {
+            const fee = get_fee(manner, product.cost) * gwei;
             const tx = await contract.create_new_product(`test_${product.id}`, product.cost, {
                 value: ethers.parseEther(`${fee}`)
             });
 
-            const id = await tx.wait();
-            alert(`새 컨트랙트가 생성되었습니다. id=${id}`);
-
-            const accessToken = localStorage.getItem("accessToken");
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/product/setStatus`, {
-                method: 'POST',
-                headers: {
-                    Authorization: `Bearer ${accessToken}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ status: "processing" })
-            });
+            const receipt = await tx.wait();
+            if (receipt.status === 0) {
+                alert("컨트랙트 등록 실패");
+                return;
+            }
+            alert(`새 컨트랙트 생성 시도 성공했습니다. 성공 여부는 백엔드에서 받아서 알려줄 예정`);
+            return;
         } catch (err) {
-            console.log(err);
-            alert("스마트 컨트랙트 생성 에러");
+            alert(`스마트 컨트랙트 생성 에러. 에러: ${err}`);
             return;
         }
     }
@@ -158,39 +175,10 @@ export default function MyPage() {
                 alert("지갑 주소 등록 실패");
             }
         } catch (err) {
-            alert("지갑 등록 중 오류가 발생했습니다.");
+            alert(`지갑 등록 중 오류가 발생했습니다. ${err}`);
         }
     }
 
-    // useEffect 안에서는 await를 직접 쓸 수 없음.
-    useEffect(() => {
-        // 여기에 API 요청해서 유저 정보 및 거래내역 받아오는 코드 작성하면 됨
-
-        const fetchUser = async () => {
-            const token = localStorage.getItem("accessToken");
-
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/user/getUser`, {
-                method: 'GET',
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                },
-            });
-
-            const userdata = await res.json();
-            console.log(userdata);
-
-            setUser({
-                name: userdata.name,
-                walletAddress: userdata.wallet,
-                shippingAddress: userdata.location
-            });
-
-            setMyTrades(userdata.trade_offers);
-
-            setMyProducts(userdata.products);
-        };
-        fetchUser();
-    }, [updated]);
 
     async function deleteOffer(id: number) {
         const accessToken = localStorage.getItem("accessToken");
@@ -201,27 +189,180 @@ export default function MyPage() {
             }
         })
 
-        const data = await res.json();
         if (res.status == 201) {
             alert("거래 신청 내역이 삭제되었습니다.");
             setUpdated(updated + 1);
         }
     }
 
-    async function deposit() {
+    async function deposit(req: TradeRequest) {
+        if (typeof window.ethereum === "undefined") {
+            alert("MetaMask를 설치해주세요.");
+            return;
+        }
 
+        try {
+            const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+            const address = accounts[0];
+            const provider = new ethers.BrowserProvider(window.ethereum);
+            const signer = await provider.getSigner();
+
+            const contract = new Contract(contractAddress, abi, signer);
+            let manner = null;
+
+            manner = await contract.get_manner(address);
+
+            const fee = (get_fee(manner, req.product.cost) + req.product.cost) * gwei;
+
+
+            const pState = await contract.get_product_state(req.product.id);
+            if (pState !== 0) {
+                alert(`Wrong Produc State. expected=2, pState=${pState}`);
+                return;
+            }
+
+            const tx = await contract.proceed_product_state(req.product.id, {
+                value: ethers.parseEther(`${fee}`)
+            });
+
+            const receipt = await tx.wait();
+            if (receipt.status === 0) {
+                alert("컨트랙트 등록 실패");
+                return;
+            }
+            alert("입금 컨트랙트 생성 시도 성공했습니다. 성공 여부는 백엔드에서 받아서 알려줄 예정");
+            return;
+        } catch (err) {
+            alert(`스마트 컨트랙트 생성 에러. 에러: ${err}`);
+            return;
+        }
     }
 
-    async function cancelAcceptedTrade() {
+    async function cancelAcceptedTrade(productId: number) {
+        if (typeof window.ethereum === "undefined") {
+            alert("MetaMask를 설치해주세요.");
+            return;
+        }
 
+        const provider = new ethers.BrowserProvider(window.ethereum);
+        const signer = await provider.getSigner();
+        const contract = new Contract(contractAddress, abi, signer);
+
+        try {
+            const tx = await contract.cancel_product(productId);
+            const receipt = await tx.wait();
+            if (receipt.status === 0) {
+                alert("컨트랙트 등록 실패");
+                return;
+            }
+            alert(`새 컨트랙트 생성 시도 성공했습니다. 성공 여부는 백엔드에서 받아서 알려줄 예정`);
+            return;
+        } catch (err) {
+            alert(`스마트 컨트랙트 생성 에러. 에러: ${err}`);
+            return;
+        }
     }
 
-    async function finishTrade() {
+    async function shippingTrade(pid: number) {
+        if (typeof window.ethereum === "undefined") {
+            alert("MetaMask를 설치해주세요.");
+            return;
+        }
 
+        try {
+            const provider = new ethers.BrowserProvider(window.ethereum);
+            const signer = await provider.getSigner();
+
+            const contract = new Contract(contractAddress, abi, signer);
+
+            const pState = await contract.get_product_state(pid);
+            if (pState !== 1) {
+                alert(`Wrong Produc State. expected=1, pState=${pState}`);
+                return;
+            }
+
+            const tx = await contract.proceed_product_state(pid);
+            const receipt = await tx.wait();
+            if (receipt.status === 0) {
+                alert("컨트랙트 등록 실패");
+                return;
+            }
+            alert("배송 컨트랙트 생성 시도 성공했습니다. 성공 여부는 백엔드에서 받아서 알려줄 예정");
+            return;
+        } catch (err) {
+            alert(`스마트 컨트랙트 생성 에러. 에러: ${err}`);
+            return;
+        }
     }
 
-    async function cancelProduct() {
+    async function finishTrade(pid: number) {
+        if (typeof window.ethereum === "undefined") {
+            alert("MetaMask를 설치해주세요.");
+            return;
+        }
 
+        try {
+            const provider = new ethers.BrowserProvider(window.ethereum);
+            const signer = await provider.getSigner();
+
+            const contract = new Contract(contractAddress, abi, signer);
+
+            const pState = await contract.get_product_state(pid);
+            if (pState !== 2) {
+                alert(`Wrong Produc State. expected=2, pState=${pState}`);
+                return;
+            }
+
+            const tx = await contract.proceed_product_state(pid);
+            const receipt = await tx.wait();
+            if (receipt.status === 0) {
+                alert("컨트랙트 등록 실패");
+                return;
+            }
+            alert("종료 컨트랙트 생성 시도 성공했습니다. 성공 여부는 백엔드에서 받아서 알려줄 예정");
+            return;
+        } catch (err) {
+            alert(`스마트 컨트랙트 생성 에러. 에러: ${err}`);
+            return;
+        }
+    }
+
+    // It is Backend Req function
+    async function removeProduct(pid: number) {
+        const accessToken = localStorage.getItem("accessToken");
+
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/product/remove/${pid}`, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${accessToken}`
+            },
+        });
+
+        if (res.status === 201) {
+            alert("게시물 삭제 성공");
+            setUpdated(updated + 1);
+        } else {
+            alert("게시물을 삭제할 수 없습니다.");
+            return;
+        }
+    }
+
+    async function cancelOffer(tid: number) {
+        const accessToken = localStorage.getItem("accessToken");
+        const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/remove/${tid}`, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${accessToken}`,
+            }
+        });
+
+        if (res.status === 201) {
+            alert("TO 삭제 성공");
+            return;
+        } else {
+            alert("오퍼를 삭제할 수 없습니다.");
+            return;
+        }
     }
 
     if (!user) return <div>로딩 중...</div>;
@@ -267,30 +408,30 @@ export default function MyPage() {
                                         <>
                                             <div className="flex gap-2">
                                                 <Button onClick={() => router.push(`/product/${t.product.id}`)}>상품으로 이동하기</Button>
-                                                <Button onClick={() => cancelAcceptedTrade()}>취소하기</Button>
+                                                <Button onClick={() => cancelOffer(t.id)}>취소하기</Button>
                                             </div>
                                         </>
                                     ) : t.accepted && t.product.status === ProductStatus.PENDING ? (
                                         <>
                                             <div className="flex gap-2">
-                                                <Button onClick={() => deposit()}>입금하기</Button>
+                                                <Button onClick={() => deposit(t)}>입금하기</Button>
                                                 <Button onClick={() => router.push(`/product/${t.product.id}`)}>상품으로 이동하기</Button>
-                                                <Button onClick={() => cancelAcceptedTrade()}>취소하기</Button>
+                                                <Button onClick={() => cancelAcceptedTrade(t.product.id)}>취소하기</Button>
                                             </div>
                                         </>
                                     ) : t.accepted && t.product.status === ProductStatus.PROCESSING ? (
                                         <>
                                             <div className="flex gap-2">
                                                 <Button onClick={() => router.push(`/product/${t.product.id}`)}>상품으로 이동하기</Button>
-                                                <Button onClick={() => cancelAcceptedTrade()}>취소하기</Button>
+                                                <Button onClick={() => cancelAcceptedTrade(t.product.id)}>취소하기</Button>
                                             </div>
                                         </>
                                     ) : t.accepted && t.product.status === ProductStatus.SHIPPING ? (
                                         <>
                                             <div className="flex gap-2">
-                                                <Button onClick={() => finishTrade()}>수신 확인 / 정산</Button>
+                                                <Button onClick={() => finishTrade(t.product.id)}>수신 확인 / 정산</Button>
                                                 <Button onClick={() => router.push(`/product/${t.product.id}`)}>상품으로 이동하기</Button>
-                                                <Button onClick={() => cancelAcceptedTrade()}>취소하기</Button>
+                                                <Button onClick={() => cancelAcceptedTrade(t.product.id)}>취소하기</Button>
                                             </div>
                                         </>
                                     ) : t.accepted && t.product.status === ProductStatus.FINISHED ? (
@@ -343,41 +484,41 @@ export default function MyPage() {
                                     {p.trade_offers.length > 0 && p.status == ProductStatus.FINDING ? (
                                         <>
                                             <div>
-                                                <strong>새 거래 신청이 </strong> {p.trade_offers.filter((offer) => offer.accepted == "pending").length}<strong>건 있습니다.</strong>
+                                                <strong>새 거래 신청이 </strong> {p.trade_offers.filter((offer) => offer.accepted == TradeOfferStatus.WAITING).length}<strong>건 있습니다.</strong>
                                             </div>
                                             <div className="flex gap-2">
                                                 <Button onClick={() => router.push(`/tradeOffers?productId=${p.id}`)}>거래 신청내역 보기</Button>
                                                 <Button onClick={() => router.push(`/product/${p.id}`)}>이동하기</Button>
-                                                <Button onClick={() => cancelProduct()}>삭제하기</Button>
+                                                <Button onClick={() => removeProduct(p.id)}>삭제하기</Button>
                                             </div>
                                         </>
                                     ) : p.status === ProductStatus.MATCHED ? (
                                         <>
                                             <div className="flex gap-2">
                                                 <Button onClick={() => createTransaction(p)}>스마트 컨트랙트 등록하기</Button>
-                                                <Button onClick={() => cancelProduct()}>삭제하기</Button>
+                                                <Button onClick={() => removeProduct(p.id)}>삭제하기</Button>
                                                 <Button onClick={() => router.push(`/product/${p.id}`)}>이동하기</Button>
                                             </div>
                                         </>
                                     ) : p.status === ProductStatus.PENDING ? (
                                         <>
                                             <div className="flex gap-2">
-                                                <Button onClick={() => cancelAcceptedTrade()}>취소하기</Button>
+                                                <Button onClick={() => cancelAcceptedTrade(p.id)}>취소하기</Button>
                                                 <Button onClick={() => router.push(`/product/${p.id}`)}>이동하기</Button>
                                             </div>
                                         </>
                                     ) : p.status === ProductStatus.PROCESSING ? (
                                         <>
                                             <div className="flex gap-2">
-                                                <Button onClick={() => router.push(`/product/${p.id}`)}>이동하기</Button>
-                                                <Button onClick={() => cancelAcceptedTrade()}>취소하기</Button>
+                                                <Button onClick={() => shippingTrade(p.id)}>배송 알리기</Button>
+                                                <Button onClick={() => cancelAcceptedTrade(p.id)}>취소하기</Button>
                                                 <Button onClick={() => router.push(`/product/${p.id}`)}>이동하기</Button>
                                             </div>
                                         </>
                                     ) : p.status === ProductStatus.SHIPPING ? (
                                         <>
                                             <div className="flex gap-2">
-                                                <Button onClick={() => cancelAcceptedTrade()}>취소하기</Button>
+                                                <Button onClick={() => cancelAcceptedTrade(p.id)}>취소하기</Button>
                                                 <Button onClick={() => router.push(`/product/${p.id}`)}>이동하기</Button>
                                             </div>
                                         </>

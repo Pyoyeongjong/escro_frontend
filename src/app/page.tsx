@@ -5,9 +5,6 @@ import { useRouter } from "next/navigation"
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { access } from "fs";
-import { verify } from "crypto";
-import { LogOut } from "lucide-react";
 
 function ProductCard({ id, title, price, img_url }: { id: number, title: string; price: string; img_url: string }) {
   const router = useRouter();
@@ -89,7 +86,7 @@ export default function Home() {
       })
 
       const data = await res.json();
-      console.log(data);
+
       if (data.error) {
         setIsLoggedIn(false);
       } else {
@@ -104,7 +101,7 @@ export default function Home() {
     const fetchProducts = async () => {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/product/getProducts?page=1&limit=10`);
       const data = await res.json();
-      console.log(data);
+
       setProducts(data.data);
     };
     fetchProducts();
