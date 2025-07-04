@@ -1,0 +1,31 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v3
+
+    - name: Add SSH key
+      uses: webfactory/ssh-agent@v0.5.4
+      with:
+        ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+    - name: SSH into EC2 and deploy
+      run: |
+        ssh -o StrictHostKeyChecking=no ubuntu@43.202.188.82 << 'EOF'
+          cd ~/escro-project/escro_trade
+          git pull origin main || exit 1
+          cd ~/escro-project/escro_frontend
+          git pull origin main || exit 1
+          cd ~/escro-project
+          docker-compose down
+          docker compose up -d --build
+        EOF
